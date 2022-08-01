@@ -1,0 +1,1608 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Resources:
+  AdminPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameConfiguration:
+        CaseSensitive: false
+      AutoVerifiedAttributes:
+        - email
+      UserPoolName: admin-pool
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  AdminPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref AdminPool
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - http://localhost:3000
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - phone
+        - email
+        - openid
+        - profile
+      SupportedIdentityProviders:
+        - COGNITO
+
+  AdminPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: "feed-the-food-admin-prod"
+      UserPoolId: !Ref AdminPool
+
+  DonarPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameConfiguration:
+        CaseSensitive: false
+      AutoVerifiedAttributes:
+        - email
+      UserPoolName: donar-pool
+      LambdaConfig:
+        PostConfirmation: !GetAtt PostConfirmationLambda.Arn
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  DonarPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref DonarPool
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - http://localhost:3000
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - phone
+        - email
+        - openid
+        - profile
+      SupportedIdentityProviders:
+        - COGNITO
+
+  DonarPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: "feed-the-food-donar-prod"
+      UserPoolId: !Ref DonarPool
+
+  NGOPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameConfiguration:
+        CaseSensitive: false
+      AutoVerifiedAttributes:
+        - email
+      UserPoolName: ngo-pool
+      LambdaConfig:
+        PostConfirmation: !GetAtt PostConfirmationLambda.Arn
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  NGOPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref NGOPool
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - http://localhost:3000
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - phone
+        - email
+        - openid
+        - profile
+      SupportedIdentityProviders:
+        - COGNITO
+
+  NGOPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: "ngo-feed-the-food-prod"
+      UserPoolId: !Ref NGOPool
+
+  NGODocumentUploadBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - NGODocLambdaTriggerPermission
+    Properties:
+      AccessControl: "BucketOwnerFullControl"
+      BucketName: "ngo-document-upload-bucket-prod"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - POST
+              - DELETE
+              - PUT
+            AllowedOrigins:
+              - "*"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: "BucketOwnerPreferred"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt InputDocumentUploadLambda.Arn
+
+  InputDocumentUploadLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamo = new AWS.DynamoDB.DocumentClient();
+          const s3 = new AWS.S3({ apiVersion: '2006-03-01' });
+
+          exports.handler = async (event, context) => {
+
+              const bucket = event.Records[0].s3.bucket.name;
+              const key = event.Records[0].s3.object.key;
+              
+              var params = {
+                  Bucket: bucket,
+                  Key: key
+              };
+              
+              console.log(params);
+              
+              
+              try {
+                  const response = await s3.getObjectTagging(params).promise();
+                  const userName = response.TagSet[1].Value
+                  const ngoName = response.TagSet[0].Value
+                  const item = {
+                      TableName: 'ngo',
+                      Item: {
+                        username: userName,
+                        documentKey: key,
+                        isNgoVerified: false,
+                        name: ngoName
+                      }
+                  };
+                  
+                  console.log("Params : ", params);
+                  await dynamo.put(item).promise();
+                  console.log('object stored');
+              } catch (e) {
+                  console.log("Called : ", e);
+              }
+          };
+
+      Description: "Triggers when ngo document uploaded to S3 bucket"
+      FunctionName: "triggerDocumentupload"
+      Handler: "index.handler"
+      Role: !GetAtt LambdaNGODocumentUploadRole.Arn
+      Runtime: "nodejs12.x"
+
+  LambdaNGODocumentUploadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Description: "Roles for document upload"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+  NGODocLambdaTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction" # Required
+      FunctionName: !Ref InputDocumentUploadLambda # Required
+      Principal: "s3.amazonaws.com" # Required
+      SourceArn: "arn:aws:s3:::ngo-document-upload-bucket-prod"
+
+  InputBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref NGODocumentUploadBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "BucketPolicyForLambda"
+            Effect: Allow
+            Action:
+              - "s3:List*"
+              - "s3:Get*"
+            Resource:
+              - "arn:aws:s3:::ngo-document-upload-bucket-prod"
+              - "arn:aws:s3:::ngo-document-upload-bucket-prod/*"
+            Principal: "*"
+
+  PostConfirmationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          var aws = require('aws-sdk');
+
+          var ses = new aws.SES();
+
+          exports.handler = (event, context, callback) => {
+              console.log(event);
+
+              if (event.request.userAttributes.email) {
+                      sendEmail(event.request.userAttributes.email, event.request.userAttributes.name, function(status) {
+
+                      // Return to Amazon Cognito
+                      callback(null, event);
+                  });
+              } else {
+                  // Nothing to do, the user's email ID is unknown
+                  callback(null, event);
+              }
+          };
+
+          function sendEmail(to, name, completedCallback) {
+              
+              var params = {
+              Destination: {
+                ToAddresses: [to]
+              },
+              Source: "patel.janvi23798@gmail.com",
+              Template: "welcome-email-template",
+              TemplateData: `{"name":"${name}"}`
+            };
+              // TemplateData: `{"name":"` + name + `"}`,
+              var email = ses.sendTemplatedEmail(params, function(err, data){
+                  if (err) {
+                      console.log(err);
+                  } else {
+                      console.log("===EMAIL SENT===");
+                  }
+                  completedCallback('Email sent');
+              });
+              console.log("EMAIL CODE END");
+          };
+
+      Description: "Trigger mail on post confirmation"
+      FunctionName: "emailTest"
+      Handler: "index.handler"
+      Role: !GetAtt PostConfirmationLambdaRole.Arn
+      Runtime: "nodejs12.x"
+
+  PostConfirmationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Description: "Roles for post confirmation lambda"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+        - "arn:aws:iam::aws:policy/AmazonSESFullAccess"
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+  NGOPostConfirmationInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction" # Required
+      FunctionName: !Ref PostConfirmationLambda # Required
+      Principal: "cognito-idp.amazonaws.com" # Required
+      SourceArn: !GetAtt NGOPool.Arn
+
+  DonorPostConfirmationInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction" # Required
+      FunctionName: !Ref PostConfirmationLambda # Required
+      Principal: "cognito-idp.amazonaws.com" # Required
+      SourceArn: !GetAtt DonarPool.Arn
+
+  InputBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - LambdaTriggerPermission
+    Properties:
+      AccessControl: "BucketOwnerFullControl"
+      BucketName: "donor-transcribe-input-prod"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - POST
+              - DELETE
+              - PUT
+            AllowedOrigins:
+              - "*"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: "BucketOwnerPreferred"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt InputBucketNotificationLambda.Arn
+
+  InputBucketNotificationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import urllib.request
+          import json
+          import boto3
+          import time
+          import os
+          import uuid
+
+          transcribe = boto3.client('transcribe')
+
+          def lambda_handler(event, context):
+              if event:
+                  file_obj = event["Records"][0]
+                  bucket_name = file_obj['s3']['bucket']['name']
+                  file_name = file_obj['s3']['object']['key']
+                  s3_uri = create_uri(bucket_name, file_name)
+                  job_name = file_name + '-' + str(uuid.uuid4())
+
+                  print(os.path.splitext(file_name)[0])
+
+                  transcribe.start_transcription_job(TranscriptionJobName = job_name,
+                                                    Media = {'MediaFileUri': s3_uri},
+                                                    MediaFormat =  'mp3',
+                                                    LanguageCode = "en-US")
+                  while True:
+                      status = transcribe.get_transcription_job(TranscriptionJobName=job_name)
+                      if status["TranscriptionJob"]["TranscriptionJobStatus"] in ["COMPLETED"]:
+                          print(status)
+                          uri = status['TranscriptionJob']['Transcript']['TranscriptFileUri']
+                          content = urllib.request.urlopen(uri).read().decode('UTF-8')
+                          print(json.dumps(content))
+                          data =  json.loads(content)
+                          transcribed_text = data['results']['transcripts'][0]['transcript']
+                          table = boto3.resource('dynamodb').Table('donor')
+                          response = table.scan(FilterExpression='#documentKey = :documentKeyValue',
+                          ExpressionAttributeNames={
+                              '#documentKey': 'documentKey'
+                          }, 
+                          ExpressionAttributeValues = {
+                              ':documentKeyValue' : file_name
+                          })
+
+                          username = response['Items'][0]['username']
+                          print(username)
+                          updatedRes = table.update_item(
+                              Key = {
+                                  'username' : username
+                              },
+                              UpdateExpression = "set description = :desc",
+                              ExpressionAttributeValues = {
+                                  ':desc' : transcribed_text
+                              },
+                              ReturnValues="UPDATED_NEW"
+                              )
+                          print(updatedRes)
+                          break
+                      elif status["TranscriptionJob"]["TranscriptionJobStatus"] in ["FAILED"]:
+                          break
+                      print("Transcription in progress")
+                      
+                      time.sleep(5)
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Transcription job created!')
+              }
+
+          def create_uri(bucket_name, file_name):
+              return "s3://"+bucket_name+"/"+file_name
+      Description: "Triggers transcribe job to convert Speech To Text"
+      FunctionName: "donor-description-transcribe"
+      Handler: "index.lambda_handler"
+      Role: !GetAtt LambdaTranscribeRole.Arn
+      Runtime: "python3.9"
+      Timeout: 60
+
+  LambdaTranscribeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Description: "Roles for speech-to-text"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonTranscribeFullAccess"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+        - "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+      Policies:
+        - PolicyName: "transcribe-bucket-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:PutObject"
+                Resource:
+                  - "arn:aws:s3:::donor-transcribe-input-prod/*"
+              - Effect: Allow
+                Action:
+                  - "s3:ListBucket"
+                Resource:
+                  - "arn:aws:s3:::donor-transcribe-input-prod"
+
+  LambdaTriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction" # Required
+      FunctionName: !Ref InputBucketNotificationLambda # Required
+      Principal: "s3.amazonaws.com" # Required
+      SourceArn: "arn:aws:s3:::donor-transcribe-input-prod"
+
+  TranscribeInputBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InputBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "BucketPolcyForLambda"
+            Effect: Allow
+            Action:
+              - "s3:List*"
+              - "s3:Get*"
+            Resource:
+              - "arn:aws:s3:::donor-transcribe-input-prod"
+              - "arn:aws:s3:::donor-transcribe-input-prod/*"
+            Principal: "*"
+
+  NGOTableSchema:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "username"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "username"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      TableName: "ngo"
+
+  DonorTableSchema:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "username"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "username"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      TableName: "donor"
+
+  NGORegNumberTableSchema:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "reg_id"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "reg_id"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      TableName: "regNumbers"
+
+  #  COMPLETEd JANVI'S PART
+
+  TextTractLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs12.x
+      Handler: index.handler
+      FunctionName: callTextractFun
+      Role: !GetAtt LambdaTextractRole.Arn
+      Code:
+        ZipFile: |
+          var AWS = require("aws-sdk");
+
+          exports.handler = async (event) => {
+              
+              // Input for textract will be S3 object
+              console.log(JSON.stringify(event));
+              AWS.config.region = "us-east-2";
+              var textract = new AWS.Textract({ apiVersion: "2018-06-27" });
+                console.log(textract);
+                
+                
+              var params = {
+              Document: {
+                /* required */
+                S3Object: {
+                  Bucket: "ngo-document-upload-bucket-prod",
+                  Name: event,
+                }
+              }
+            };
+
+              
+            const data = await textract.detectDocumentText(params).promise();
+            let detectedText = '';
+            console.log(data['Blocks'][0]);
+            const store = data['Blocks'];
+            for(let item in store ){
+              if(store[item]['BlockType'] === 'LINE')
+              {
+                detectedText += store[item]['Text'] + '\n'   
+              }
+            }
+
+            console.log(detectedText);
+              const splittedData = detectedText.split("Registration No:").pop();
+                const finalNumber = splittedData.toString().split('"');
+                const registrationNumber = finalNumber.toString().split("\n");
+                console.log(registrationNumber[0].replace(" ",""));
+                let number = parseInt(registrationNumber[0].replace(" ",""))
+            return number;
+              
+          };
+
+      Description: Invoke a function during stack creation.
+
+  LambdaTextractRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Description: "Roles for textract lambda"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonTextractFullAccess"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+        - "arn:aws:iam::aws:policy/AWSLambdaExecute"
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+  APISecret:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      Name: API_KEY
+      Description: key for API Getway
+      SecretString: '{"api_key":"n3xVmZ7K4n3GA4lp70vzF4NANhDAVUOanuF4N2v"}'
+
+  # COMPLETED DHARMIK'S Cloudformation Stack
+
+  MyInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Description: Beanstalk EC2 role
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier
+  MyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref MyInstanceRole
+  SampleApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      Description: AWS Elastic Beanstalk Sample Node.js Application
+  SampleConfigurationTemplate:
+    Type: AWS::ElasticBeanstalk::ConfigurationTemplate
+    Properties:
+      ApplicationName:
+        Ref: SampleApplication
+      Description: SSH access to Node.JS Application
+      SolutionStackName: 64bit Amazon Linux 2 v5.5.4 running Node.js 16
+      OptionSettings:
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value:
+            Ref: MyInstanceProfile
+  SampleEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    Properties:
+      Description: AWS Elastic Beanstalk Environment running Sample Node.js Application
+      ApplicationName:
+        Ref: SampleApplication
+      OptionSettings:
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: InstanceType
+          Value: t2.medium
+      TemplateName:
+        Ref: SampleConfigurationTemplate
+      # VersionLabel:
+      #   Ref: SampleApplicationVersion
+
+  # API GATEWAY
+  NGOServiceLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "ngo-services-lambda"
+      Description: Invoke function using API Gateway that performs operations on NGO and Donor table in DynamoDB.
+      Code:
+        ZipFile: |
+          const AWS = require("aws-sdk");
+
+          const awsConfig = {
+            accessKeyId: "",
+            secretAccessKey: "",
+            region: "",
+          };
+
+          AWS.config.update(awsConfig);
+
+          const SES = new AWS.SES();
+
+          const dynamodbNGOTableName = "ngo";
+          const dynamodbDonorTableName = "donor";
+          const healthPath = "/health";
+          const itemsPath = "/items";
+          const updateItemsPath = "/updateitems";
+          const updateNGOProperties = "/updatengoproperties";
+          const makeDonationPath = "/makedonation";
+          const verifiedNGOPath = "/verifiedngos";
+
+          /**
+          * DynamoDB client that performs the task of accessing the table in the DynamoDB.
+          */
+          const dynamoDBClient = new AWS.DynamoDB.DocumentClient();
+
+          /**
+          * Lambda function for performing operations on NGO and Users table in dynamoDB.
+          * @event: is the request made to the lambda.
+          */
+          exports.handler = async (event) => {
+            console.log("Event: ", event);
+            let response;
+
+            switch (true) {
+              case event.httpMethod === "GET" && event.path === healthPath:
+                response = buildResponse(200, "API is healthy!");
+                break;
+
+              case event.httpMethod === "GET" && event.path === verifiedNGOPath:
+                response = verifiedNgoList();
+                break;
+
+              case event.httpMethod === "POST" && event.path === itemsPath:
+                const username = JSON.parse(event.body).username;
+                response = getNGO(username);
+                break;
+
+              case event.httpMethod === "POST" && event.path === updateItemsPath:
+                const updateItemsRequestBody = JSON.parse(event.body);
+                response = await updateNGOList(
+                  updateItemsRequestBody.username,
+                  updateItemsRequestBody.updateKey,
+                  updateItemsRequestBody.updateValue
+                );
+                break;
+
+              case event.httpMethod === "POST" && event.path === updateNGOProperties:
+                const updateValueList = JSON.parse(event.body).updateList;
+
+                const NGO_Username = JSON.parse(event.body).username;
+                response = await updateNGO(
+                  NGO_Username,
+                  updateValueList[0].updateKey,
+                  updateValueList[0].updateValue
+                );
+                response = await updateNGO(
+                  NGO_Username,
+                  updateValueList[1].updateKey,
+                  updateValueList[1].updateValue
+                );
+                break;
+
+              case event.httpMethod === "POST" && event.path === makeDonationPath:
+                const makeDonationRequestBody = JSON.parse(event.body);
+                response = await makeNGODonation(
+                  makeDonationRequestBody.ngoUsername,
+                  makeDonationRequestBody.donorUsername,
+                  makeDonationRequestBody.donate
+                );
+                break;
+
+              default:
+                response = buildResponse(404, "No such API!");
+                break;
+            }
+
+            return response;
+          };
+
+          /**
+          * Builds a required response in order to send to the request made.
+          * @statusCode indicates the status of response i.e. success or failure.
+          * @body refers to data that is to be sent as a response to the request made.
+          */
+          const buildResponse = (statusCode, body) => {
+            console.log(
+              "Build Response is called with status code: ",
+              statusCode,
+              " with body: ",
+              body
+            );
+
+            return {
+              statusCode: statusCode,
+              headers: {
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "*",
+              },
+              body: JSON.stringify(body),
+            };
+          };
+
+          /**
+          * Based on the given ngoID it returns the details of the NGO.
+          * @ngoID is a unique id using which a NGO can be fetched.
+          */
+          const getNGO = async (username) => {
+            const params = {
+              TableName: dynamodbNGOTableName,
+              Key: {
+                username: username,
+              },
+            };
+
+            return await dynamoDBClient
+              .get(params)
+              .promise()
+              .then(
+                (response) => {
+                  return buildResponse(200, response.Item);
+                },
+                (error) => {
+                  console.log("Error occurred while getting NGO: ", error);
+                }
+              );
+          };
+
+            /**
+            * Get the details of Donor using the donorID.
+            * @donorID is a unique id using which a Donor can be fetched.
+            */
+            const getDonorDetails = async (username) => {
+              const params = {
+                TableName: dynamodbDonorTableName,
+                Key: {
+                  username: username,
+                },
+              };
+
+              return await dynamoDBClient
+                .get(params)
+                .promise()
+                .then(
+                  (response) => {
+                    return buildResponse(200, response.Item);
+                  },
+                  (error) => {
+                    console.log("Error while getting donor details: ", error);
+                  }
+                );
+            };
+
+            /**
+            * Updates the requirement list of the NGO
+            * @ngoID is a unique key to identify which NGO's requirement list is to be updated.
+            * @updateKey is the name of the column which is to be updated i.e.the requirementList column.
+            * @updateValue is the new value that is to stored in the requirementList column.
+            */
+            const updateNGOList = async (username, updateKey, updateValue) => {
+              const params = {
+                TableName: dynamodbNGOTableName,
+                Key: {
+                  username: username,
+                },
+                UpdateExpression: `set ${updateKey} = :value`,
+                ExpressionAttributeValues: {
+                  ":value": updateValue,
+                },
+                ReturnValues: "UPDATED_NEW",
+              };
+
+              return await dynamoDBClient
+                .update(params)
+                .promise()
+                .then(
+                  (response) => {
+                    const body = {
+                      Operation: "UPDATE",
+                      Message: "SUCCESS",
+                      Item: response,
+                    };
+
+                    return buildResponse(200, body);
+                  },
+                  (error) => {
+                    console.log(
+                      "Error occurred while updating NGO requirement list: ",
+                      error
+                    );
+                  }
+                );
+            };
+
+            /**
+            * Updates the image and description of the NGO
+            * @ngoID is a unique key to identify which NGO's requirement list is to be updated.
+            * @updateKey is the name of the column which is to be updated i.e ngoImage or ngoDescription
+            * @updateValue is the new value that is to be added in the ngoImage or ngoDescription column
+            */
+            const updateNGO = async (username, updateKey, updateValue) => {
+              const params = {
+                TableName: dynamodbNGOTableName,
+                Key: {
+                  username: username,
+                },
+                UpdateExpression: `set ${updateKey} = :value`,
+                ExpressionAttributeValues: {
+                  ":value": updateValue,
+                },
+                ReturnValues: "UPDATED_NEW",
+              };
+
+              return await dynamoDBClient
+                .update(params)
+                .promise()
+                .then(
+                  (response) => {
+                    const body = {
+                      Operation: "UPDATE",
+                      Message: "SUCCESS",
+                      Item: response,
+                    };
+                    return buildResponse(200, body);
+                  },
+                  (error) => {
+                    console.log(
+                      "Error occurred while updating NGO requirement list: ",
+                      error
+                    );
+                  }
+                );
+            };
+
+            /**
+            * Comparing the NGO requirement list and donar list and updating it in respective table.
+            * @ngoID is the unique id to identify the NGO
+            * @userID is the unique id to identify the user
+            * @donationList is the list of donation made by the donar to the NGO.
+            */
+            const makeNGODonation = async (ngoUsername, donarUsername, donationList) => {
+              if (donationList.length === 0) {
+                return buildResponse(200, {
+                  success: true,
+                  message: "No such donation!",
+                });
+              } else {
+                let requirementList, ngoDonatedItems, donorDonatedItems, donorDescription;
+
+                await getDonorDetails(donarUsername).then(
+                  (response) => {
+                    donorDonatedItems =
+                      JSON.parse(response.body).donatedItems === undefined
+                        ? []
+                        : JSON.parse(response.body).donatedItems;
+                    donorDescription =
+                      JSON.parse(response.body).description === undefined
+                        ? ""
+                        : JSON.parse(response.body).description;
+                    console.log(donorDescription);
+                  },
+                  (error) => {
+                    console.log(
+                      "Error while getting Donor details in the making donation! ",
+                      error
+                    );
+                  }
+                );
+
+                await getNGO(ngoUsername).then(
+                  (response) => {
+                    requirementList = JSON.parse(response.body).donate;
+                    ngoDonatedItems =
+                      JSON.parse(response.body).donatedItems === undefined
+                        ? []
+                        : JSON.parse(response.body).donatedItems;
+                  },
+                  (error) => {
+                    console.log(
+                      "Error Occured while getting NGO details in the make donation function! ",
+                      error
+                    );
+                  }
+                );
+
+                let updatedRequirementList = [];
+                let updateDonatedList = [];
+
+                donationList.map((donationItem) => {
+                  requirementList.map((requirementItem) => {
+                    if (
+                      requirementItem.category === donationItem.category &&
+                      requirementItem.measurement === donationItem.measurement &&
+                      requirementItem.name === donationItem.name
+                    ) {
+                      let donatedQuantity, reqQuantity;
+
+                      if (requirementItem.quantity <= donationItem.donatedQuantity) {
+                        donatedQuantity = requirementItem.quantity;
+                        reqQuantity =
+                          requirementItem.quantity === donationItem.donatedQuantity
+                            ? 0
+                            : donationItem.donatedQuantity - requirementItem.quantity;
+
+                        updateDonatedList.push({
+                          category: requirementItem.category,
+                          measurement: requirementItem.measurement,
+                          name: requirementItem.name,
+                          quantity: donatedQuantity,
+                        });
+                      } else {
+                        donatedQuantity = donationItem.donatedQuantity;
+                        reqQuantity =
+                          requirementItem.quantity - donationItem.donatedQuantity;
+                        updatedRequirementList.push({
+                          category: requirementItem.category,
+                          measurement: requirementItem.measurement,
+                          name: requirementItem.name,
+                          quantity: reqQuantity,
+                        });
+                        updateDonatedList.push({
+                          category: requirementItem.category,
+                          measurement: requirementItem.measurement,
+                          name: requirementItem.name,
+                          quantity: donationItem.donatedQuantity,
+                        });
+                      }
+                    } else {
+                      updatedRequirementList.push({
+                        category: requirementItem.category,
+                        measurement: requirementItem.measurement,
+                        name: requirementItem.name,
+                        quantity: requirementItem.quantity,
+                      });
+                    }
+                  });
+                });
+
+                if (updateDonatedList.length === 0) {
+                  return buildResponse(200, {
+                    success: true,
+                    message: "No matching donating item. Donation cannot be made!",
+                  });
+                } else {
+                  console.log(
+                    "Donation is to be made",
+                    updatedRequirementList,
+                    updateDonatedList
+                  );
+
+                  let updatedNGODonatedList = await updatedDonationList(
+                    ngoDonatedItems,
+                    updateDonatedList
+                  );
+
+                  // let newUpdatedDonorList = await updatedDonationList(
+                  //   donorDonatedItems,
+                  //   updateDonatedList
+                  // );
+
+                  await updateList(
+                    ngoUsername,
+                    "donatedItems",
+                    updatedNGODonatedList,
+                    dynamodbNGOTableName
+                  );
+
+                  await updateList(
+                    ngoUsername,
+                    "donate",
+                    updatedRequirementList,
+                    dynamodbNGOTableName
+                  );
+
+                  // await updateList(
+                  //   donarUsername,
+                  //   "donatedItems",
+                  //   newUpdatedDonorList,
+                  //   dynamodbDonorTableName
+                  // );
+
+                  /**
+                  * Sending mail to NGO and Donar regarding the donation.
+                  */
+
+                  await sendDonationEmail(
+                    updatedNGODonatedList,
+                    "dhsoni2510@gmail.com",
+                    "You have donated following items!",
+                    donorDescription
+                  );
+                  await sendDonationEmail(
+                    updatedNGODonatedList,
+                    "doctordhairya@gmail.com",
+                    "Following donation is made!",
+                    donorDescription
+                  );
+
+                  return buildResponse(200, {
+                    success: true,
+                    message: "Donation request made. Please check your mail!",
+                  });
+                }
+              }
+            };
+
+            /**
+            * Used to combine both arrays in order to get total donation made.
+            * @dbList is the list stored in the database.
+            * @updatedList is the updated donation list.
+            */
+            const updatedDonationList = async (dbList, updatedList) => {
+              if (dbList.length === 0) {
+                return updatedList;
+              } else {
+                return [...dbList, ...updatedList];
+              }
+            };
+
+            /**
+            * Storing the donation list made by the donar.
+            * @id for uniquely identifying any row.
+            * @updateKey the column name whose value is to be updated.
+            * @updateValue the new value that is to be stored in the given column name.
+            * @tableName is the name of the table on which this operation is to be performed.
+            */
+            const updateList = async (username, updateKey, updateValue, tableName) => {
+              const params = {
+                TableName: tableName,
+                Key: {
+                  username: username,
+                },
+                UpdateExpression: `set ${updateKey} = :value`,
+                ExpressionAttributeValues: {
+                  ":value": updateValue,
+                },
+                ReturnValues: "UPDATED_NEW",
+              };
+
+              return await dynamoDBClient
+                .update(params)
+                .promise()
+                .then(
+                  (response) => {
+                    const body = {
+                      Operation: "UPDATE",
+                      Message: "SUCCESS",
+                      Item: response,
+                    };
+
+                    return true;
+                  },
+                  (error) => {
+                    console.log("Error while updating the list! ", error);
+                  }
+                );
+            };
+
+            /**
+            * Used to send email to Donor and NGO regarding Donation.
+            * @donationList is the list that is to be displayed in the gmail.
+            * @destinationEmailAddress is the email to which the email is to be sent.
+            * @donationMessage is the messgae to be displayed in the email subject.
+            */
+            const sendDonationEmail = async (
+              donationList,
+              destinationEmailAddress,
+              donationMessage,
+              donarDescription
+            ) => {
+              console.log(donationMessage);
+              const params = {
+                Source: "patel.janvi23798@gmail.com",
+                Destination: {
+                  ToAddresses: [destinationEmailAddress],
+                },
+                Message: {
+                  Subject: {
+                    Charset: "UTF-8",
+                    Data: "Donation Email",
+                  },
+                  Body: {
+                    Html: {
+                      Charset: "UTF-8",
+                      Data: `
+                          <head>
+                          <style>
+                          table {
+                            font-family: arial, sans-serif;
+                            border-collapse: collapse;
+                            width: 100%;
+                          }
+                          
+                          td, th {
+                            border: 1px solid #dddddd;
+                            text-align: left;
+                            padding: 8px;
+                          }
+                          
+                          tr:nth-child(even) {
+                            background-color: #dddddd;
+                          }
+                          </style>
+                          </head>
+                          <body>
+                          
+                          <h1>You have recieved a donation as shown below</h1>
+                          
+                          <table>
+                            <tr>
+                              <th>Category</th>
+                              <th>Measurement</th>
+                              <th>Name</th>
+                              <th>Quantity</th>
+                            </tr>
+                          ${donationList.map((item) => {
+                            return `
+                                  <tr>
+                                    <td>${item.category}</td>
+                                    <td>${item.measurement}</td>
+                                    <td>${item.name}</td>
+                                    <td>${item.quantity}</td>
+                                  </tr>
+                                `;
+                          })}
+                          </table>
+                          <h1>${donarDescription}</h1>
+                          </body>
+                        
+                          `,
+                    },
+                  },
+                },
+              };
+
+              SES.sendEmail(params, (err, data) => {
+                if (err) {
+                  console.log("Somethings went wrong while sending email!");
+                } else {
+                  console.log("Email is sent successfully!");
+                }
+              });
+            };
+
+            /**
+            * Is used to get the list of NGO that are verified.
+            */
+            const verifiedNgoList = async () => {
+              const params = {
+                TableName: dynamodbNGOTableName,
+                FilterExpression: "isNgoVerified = :isNgoVerified",
+                ExpressionAttributeValues: {
+                  ":isNgoVerified": true,
+                },
+              };
+
+              return await dynamoDBClient
+                .scan(params)
+                .promise()
+                .then(
+                  (response) => {
+                    return buildResponse(200, response.Items);
+                  },
+                  (error) => {
+                    console.log("Error occurred while getting NGO: ", error);
+                  }
+                );
+            };
+
+      Handler: index.handler
+      Runtime: nodejs12.x
+      Role: !GetAtt NGOServiceIAMRole.Arn
+      Timeout: 10
+    DependsOn:
+      - NGOServiceIAMRole
+
+  NGOServiceIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonSESFullAccess
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+  NGOImageUploadBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: "BucketOwnerFullControl"
+      BucketName: "ngo-images-prod"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - POST
+              - DELETE
+              - PUT
+            AllowedOrigins:
+              - "*"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: "BucketOwnerPreferred"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  NGOImageUploadBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref NGOImageUploadBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "BucketPolicyForImageUpload"
+            Effect: Allow
+            Action:
+              - "s3:List*"
+              - "s3:Get*"
+            Resource:
+              - "arn:aws:s3:::ngo-images-prod"
+              - "arn:aws:s3:::ngo-images-prod/*"
+            Principal: "*"
+
+  APIGatewayRestAPI:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: ngo-service-apis
+      Description: This API are the endpoints for performing operations on NGO table.
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+    DependsOn:
+      - NGOServiceLambda
+  APIGatewayHealthResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: health
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayHealthMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayHealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: GET
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt NGOServiceLambda.Arn
+    DependsOn:
+      - APIGatewayHealthResource
+
+  APIGatewayItemsResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: items
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayItemsMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayItemsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt NGOServiceLambda.Arn
+    DependsOn:
+      - APIGatewayItemsResource
+
+  APIGatewayMakesDonationResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: makedonation
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayMakesDonationMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayMakesDonationResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt NGOServiceLambda.Arn
+    DependsOn:
+      - APIGatewayMakesDonationResource
+
+  APIGatewayUpdateItemsResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: updateitems
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayUpdateItemsMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayUpdateItemsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt NGOServiceLambda.Arn
+    DependsOn:
+      - APIGatewayUpdateItemsResource
+
+  APIGatewayUpdateNGOPropertiesResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: updatengoproperties
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayUpdateNGOPropertiesMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayUpdateNGOPropertiesResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt NGOServiceLambda.Arn
+    DependsOn:
+      - APIGatewayUpdateNGOPropertiesResource
+
+  APIGatewayVerifiedNGOSResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: verifiedngos
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayVerifiedNGOSMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      ApiKeyRequired: true
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayVerifiedNGOSResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: GET
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt NGOServiceLambda.Arn
+    DependsOn:
+      - APIGatewayVerifiedNGOSResource
+
+  APIGatewayDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      StageName: production
+    DependsOn:
+      - APIGatewayHealthMethod
+      - APIGatewayItemsMethod
+      - APIGatewayMakesDonationMethod
+      - APIGatewayUpdateItemsMethod
+      - APIGatewayUpdateNGOPropertiesMethod
+      - APIGatewayVerifiedNGOSMethod
+  APIGatewayPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt NGOServiceLambda.Arn # Required
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:/*/GET/health
+
+    DependsOn:
+      - APIGatewayDeployment
+
+  APIKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn:
+      - APIGatewayDeployment
+    Properties:
+      Name: TestingApiKey
+      Description: CloudFormation for NGO Service API Key
+      Enabled: true
+      Value: n3xVmZ7K4n3GA4lp70vzF4NANhDAVUOanuF4N2v
+      StageKeys:
+        - RestApiId: !Ref APIGatewayRestAPI
+          StageName: production
+
+  APIUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+        - ApiId: !Ref APIGatewayRestAPI
+          Stage: production
+      Description: This usage plan is for the NGO Service API's
+      Quota:
+        Limit: 10000000
+        Period: MONTH
+      Throttle:
+        BurstLimit: 5000
+        RateLimit: 10000000
+      UsagePlanName: ngo-usage-plan
+    DependsOn:
+      - APIKey
+
+  APIUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref APIKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref APIUsagePlan
+    DependsOn:
+      - APIKey
+      - APIUsagePlan
